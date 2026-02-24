@@ -1,62 +1,53 @@
 # Blockchain Node Specifications
 
-> Managed via [5dlabs/kotal](https://github.com/5dlabs/kotal) fork — deployed as Kubernetes CRDs on the CTO cluster.
-> Kotal operator is running in the `kotal` namespace on OVH BHS5.
+> Managed via [5dlabs/kotal](https://github.com/5dlabs/kotal) fork — deployed as Kubernetes CRDs.
+> Kotal operator is live in the `kotal` namespace on the BHS5 CTO cluster.
+> Blockchain VMs will be provisioned in **OVH BHS5** (same DC as CTO cluster).
+>
+> ⚠️ **Blocker:** BHS5 quota is at 32/34 cores. Both t1-90 VMs need ~32 additional cores.
+> Jon needs to request a quota increase before provisioning.
 
 ---
 
-## Overview
+## Deployment Overview
 
 ```mermaid
 flowchart TB
-    subgraph KOTAL["Kotal Operator (kotal namespace — OVH BHS5)"]
-        OP["kotal-operator\nghcr.io/5dlabs/kotal:latest\n(nearcore 2.10.6 + reth fork)"]
-    end
+    subgraph BHS5["🇨🇦  OVH BHS5 — Beauharnois, Canada"]
+        direction TB
 
-    subgraph NEAR_STACK["NEAR Mainnet Node"]
-        NEAR_CRD["near.kotal.io/v1alpha1\nNode CR"]
-        NEAR_SVC["NEAR RPC\nnearcore 2.10.6\nJSON-RPC :3030\nNetwork: mainnet"]
-        NEAR_VOL["PVC\n800 GB NVMe\n(t1-90 local disk)"]
-        NEAR_CRD --> NEAR_SVC
-        NEAR_SVC --> NEAR_VOL
-    end
+        subgraph CTO_CLUSTER["CTO RKE2 Cluster  (existing)"]
+            KOTAL["kotal-operator\n(kotal namespace)\nghcr.io/5dlabs/kotal:latest"]
+        end
 
-    subgraph BASE_STACK["BASE Mainnet Node (Reth)"]
-        BASE_CRD["ethereum.kotal.io/v1alpha1\nNode CR"]
-        BASE_SVC["BASE RPC\nclient: reth\nnetwork: base\nJSON-RPC :8545\nWebSocket :8546"]
-        BASE_VOL["PVC\n1.8 TB total\n800 GB NVMe + 1 TB block vol"]
-        BASE_CRD --> BASE_SVC
-        BASE_SVC --> BASE_VOL
-    end
+        subgraph NEAR_VM["New VM: t1-90  (NEAR Mainnet)"]
+            NEAR_NODE["near.kotal.io/v1alpha1 Node\nnearcore 2.10.6\nJSON-RPC :3030\n800 GB NVMe"]
+        end
 
-    OP -->|"manages"| NEAR_CRD
-    OP -->|"manages"| BASE_CRD
+        subgraph BASE_VM["New VM: t1-90 or t2-90  (BASE Mainnet)"]
+            BASE_NODE["ethereum.kotal.io/v1alpha1 Node\nclient: reth · network: base\nJSON-RPC :8545 · WS :8546\n800 GB NVMe + 1 TB block vol"]
+        end
+
+        KOTAL -->|"manages via CRD"| NEAR_NODE
+        KOTAL -->|"manages via CRD"| BASE_NODE
+    end
 ```
 
 ---
 
 ## NEAR Mainnet
 
-### Hardware Requirements
+### Instance: `t1-90` (OVH BHS5)
 
-| Resource | Minimum | Recommended |
+| Resource | `t1-90` | NEAR Requirement |
 |---|---|---|
-| vCPU | 8 | 16 |
-| RAM | 24 GB | 64 GB+ |
-| Storage | 500 GB NVMe | 1 TB NVMe |
-| Network | 1 Gbps | 1 Gbps+ |
+| vCPU | 16 | ≥ 8 |
+| RAM | 90 GB | ≥ 24 GB |
+| Disk | 800 GB NVMe | ≥ 500 GB |
+| Network | 1 Gbps | 1 Gbps |
+| Region | BHS5 🇨🇦 | — |
 
-### OVH Instance: `t1-90`
-
-| Property | Value |
-|---|---|
-| vCPU | 16 |
-| RAM | 90 GB |
-| Disk | 800 GB NVMe |
-| Network | Up to 1 Gbps |
-| Region | BHS5 |
-
-### Kotal CRD (example)
+### Kotal CRD
 
 ```yaml
 apiVersion: near.kotal.io/v1alpha1
@@ -66,7 +57,6 @@ metadata:
   namespace: blockchain
 spec:
   network: mainnet
-  nodePrivateKeySecretName: near-node-key
   rpc: true
   resources:
     cpu: "8"
@@ -77,32 +67,22 @@ spec:
 
 ---
 
-## BASE Mainnet (via Reth)
+## BASE Mainnet (Reth)
 
-### Hardware Requirements
+> BASE is an OP Stack L2. Reth syncs both the BASE L2 chain and reads L1 Ethereum state.
+> Storage grows ~250–500 GB/year depending on pruning mode.
 
-| Resource | Minimum | Recommended |
-|---|---|---|
-| vCPU | 8 | 16+ |
-| RAM | 32 GB | 64 GB+ |
-| Storage | 1.5 TB NVMe | 2 TB+ NVMe |
-| Network | 1 Gbps | 1 Gbps+ |
+### Instance Options (OVH BHS5)
 
-> BASE is an OP Stack L2. Reth syncs both the L2 chain and reads L1 (Ethereum mainnet) state.
-> Storage grows ~500 GB/year for archive, ~250 GB/year for pruned.
+| Instance | vCPU | RAM | NVMe Disk | Extra Storage | Total | Notes |
+|---|---|---|---|---|---|---|
+| `t1-90` | 16 | 90 GB | 800 GB | + 1 TB block vol | ~1.8 TB | ✅ Recommended |
+| `t2-90` | 30 | 90 GB | 800 GB | + 1 TB block vol | ~1.8 TB | More CPU, faster sync |
+| `t1-180` | 32 | 180 GB | 400 GB | + 2 × 1 TB vols | ~2.4 TB | ⚠️ More block vols needed |
 
-### OVH Instance Options
+**Recommended: `t1-90` + 1 TB OVH block volume** (attach to `/data/base`)
 
-| Instance | vCPU | RAM | Disk | Notes |
-|---|---|---|---|---|
-| `t1-90` | 16 | 90 GB | 800 GB NVMe | Add 1 TB OVH block vol for archive |
-| `t2-90` | 30 | 90 GB | 800 GB NVMe | More CPU for faster sync |
-| `t1-180` | 32 | 180 GB | 400 GB NVMe | ⚠️ Less disk — needs 2×1 TB block vols |
-| `t1-le-90` | 16 | 90 GB | 400 GB NVMe | ❌ Too small |
-
-**Recommended: `t1-90` + 1 TB OVH block volume**
-
-### Kotal CRD (example)
+### Kotal CRD
 
 ```yaml
 apiVersion: ethereum.kotal.io/v1alpha1
@@ -124,59 +104,39 @@ spec:
 
 ---
 
-## Solana RPC Node (External — PhoenixNAP Singapore)
-
-> Not managed by Kotal. Standalone bare-metal deployment.
+## BHS5 Quota & Provisioning Plan
 
 ```mermaid
-flowchart LR
-    subgraph SOL_PHXNAP["PhoenixNAP Singapore — 125.253.92.141"]
-        direction TB
-        BIN["Jito v3.1.8-jito\n(client: Bam)\n/home/ubuntu/jito-solana/"]
-        GRPC["yellowstone-grpc v12\ngRPC :10000\nGeyser plugin"]
-        RPC["JSON-RPC :8899"]
-        subgraph DISKS["Disk Layout (post-migration Feb-24)"]
-            NVME0["nvme0n1 (root)\nOS + /ledger (637 GB)\n+ swap (200 GB)"]
-            NVME1["nvme1n1 (/solana)\naccounts (513 GB)\nsnapshots (484 GB)\nswap 72 GB"]
-        end
-        BIN --> RPC
-        BIN --> GRPC
-        BIN --> DISKS
+flowchart TB
+    subgraph NOW["Current State"]
+        QUOTA["BHS5 vCPU Quota\n32 / 34 used\n2 cores free"]
+        VMS["4× b2-30\n(8 vCPU each = 32 vCPU)"]
     end
 
-    WATCHDOG["solana-watchdog.sh\nChecks RPC health every 60s\nRestarts after 5 fails"]
-    WATCHDOG -->|"monitors"| RPC
+    subgraph NEEDED["To Add Blockchain Nodes"]
+        NEAR_REQ["t1-90 for NEAR\n+16 vCPU"]
+        BASE_REQ["t1-90 for BASE\n+16 vCPU"]
+        TOTAL["Total needed:\n+32 vCPU\nTarget quota: ≥ 70 cores"]
+    end
+
+    subgraph ACTION["Action Required"]
+        INCREASE["Jon → OVH Console\nProject 6093a51d...\nBHS5 → Quota → Request Increase\nJustify: blockchain RPC infrastructure\nSuggest: 100 cores"]
+    end
+
+    NOW --> NEEDED --> ACTION
 ```
-
-### Key Configuration
-
-| Setting | Value | Reason |
-|---|---|---|
-| `vm.swappiness` | 1 | Prevents swap thrashing |
-| `--ledger` | `/ledger` (root disk) | Isolated I/O from accounts |
-| `--accounts-dir` | `/solana/accounts` | Separate NVMe |
-| `--snapshot-interval-slots` | 5000 | Reduce snapshot I/O |
-| `--no-rocksdb-compaction` | removed in v3.1.8 | Not supported |
-| Secondary indexes | disabled | Saves 60–80 GB RAM |
-| yellowstone-grpc | v12.1.0-rc5 | gRPC streaming |
 
 ---
 
-## Cluster Capacity: OVH BHS5 Quota
+## NVMe Instance Comparison (BHS5)
 
-> **Current state:** 32 / 34 cores used. **Quota increase required before adding new VMs.**
-
-```mermaid
-pie title BHS5 vCPU Usage (34 core quota)
-    "cto-node-1 (control-plane)" : 8
-    "cto-node-2 (worker)" : 8
-    "cto-node-3 (worker)" : 8
-    "cto-node-4 (worker)" : 8
-    "Available headroom" : 2
-```
-
-### To provision NEAR + BASE nodes:
-- **Need ~32 additional cores** (2× t1-90 = 32 vCPU)
-- **Action required:** Request OVH BHS5 quota increase to ≥80 cores
-  - OVH Console → Project `6093a51de65b458e8b20a7c570a4f2c1` → Quota → Request increase
-  - Justify: blockchain RPC nodes for production Web3 infrastructure
+| Instance | vCPU | RAM | Local NVMe | Network | Use Case |
+|---|---|---|---|---|---|
+| `t1-45` | 8 | 45 GB | 400 GB | 1 Gbps | Small nodes / dev |
+| **`t1-90`** | **16** | **90 GB** | **800 GB** | **1 Gbps** | **NEAR + BASE ⭐** |
+| `t1-180` | 32 | 180 GB | 400 GB | 1 Gbps | High CPU, less disk |
+| `t2-45` | 15 | 45 GB | 400 GB | 1 Gbps | — |
+| **`t2-90`** | **30** | **90 GB** | **800 GB** | **1 Gbps** | **BASE (faster sync)** |
+| `t2-180` | 60 | 180 GB | 50 GB | 1 Gbps | ⚠️ Very small disk |
+| `t1-le-90` | 16 | 90 GB | 400 GB | 1 Gbps | Less storage variant |
+| `t1-le-180` | 32 | 180 GB | 400 GB | 1 Gbps | — |

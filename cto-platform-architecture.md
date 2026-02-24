@@ -1,7 +1,7 @@
 # CTO Platform Architecture
 
 > **Last updated:** 2026-02-24
-> Region key: BHS5 = OVH Beauharnois (Canada), GRA = OVH Gravelines (France), SGP = PhoenixNAP Singapore
+> **Infrastructure:** OVH Public Cloud — BHS5 (Beauharnois, Canada)
 
 ---
 
@@ -9,147 +9,121 @@
 
 ```mermaid
 flowchart TB
-    %% ── External / Edge ──────────────────────────────────────────
+    %% ── Edge ─────────────────────────────────────────────────────
     subgraph EDGE["☁️  Edge & DNS"]
         CF["Cloudflare\n*.5dlabs.ai\nTunnel: cto-main"]
         GH["GitHub\n5dlabs/cto\nArgoCD GitOps"]
     end
 
-    %% ── CTO Cluster (OVH BHS5, Canada) ──────────────────────────
-    subgraph BHS5["🇨🇦  OVH BHS5 — CTO Cluster (Montreal)"]
+    %% ── OVH BHS5 ─────────────────────────────────────────────────
+    subgraph BHS5["🇨🇦  OVH BHS5 — Beauharnois, Canada"]
         direction TB
 
-        subgraph CP["Control Plane — cto-node-1\n(b2-30 · 8 vCPU · 30 GB RAM · 51.79.26.198)"]
-            RKE2["RKE2 v1.30.9\nCilium CNI\nkubeProxyReplacement=true"]
-            ARGO["ArgoCD\nhttps://argocd.5dlabs.ai"]
-            BAO["OpenBao (Vault)\n63 ExternalSecrets synced"]
+        subgraph CP["Control Plane — cto-node-1  (b2-30 · 8 vCPU · 30 GB · 51.79.26.198)"]
+            RKE2["RKE2 v1.30.9\nCilium CNI · kubeProxyReplacement=true\nkube-proxy disabled"]
+            ARGO["ArgoCD\nargocd.5dlabs.ai"]
+            BAO["OpenBao\n63 ExternalSecrets synced"]
         end
 
-        subgraph WORKERS["Workers — cto-node-2/3/4\n(b2-30 · 8 vCPU · 30 GB RAM each)"]
+        subgraph WORKERS["Workers — cto-node-2/3/4  (b2-30 · 8 vCPU · 30 GB each)"]
             direction LR
 
-            subgraph PLATFORM["Platform Services"]
-                ING["ingress-nginx\nNodePort 30080/30444"]
+            subgraph PLATFORM["Platform"]
+                ING["ingress-nginx\n:30080 / :30444"]
                 CERT["cert-manager"]
-                CFTUN["cloudflared\nTunnel agent"]
-                OBS["Prometheus + Grafana\nhttps://grafana.5dlabs.ai"]
+                CFTUN["cloudflared\ncto-main tunnel"]
+                OBS["Grafana\ngrafana.5dlabs.ai"]
+                ESO["external-secrets\noperator"]
             end
 
-            subgraph AI["AI / ML Stack"]
-                KUBEAI["KubeAI Operator\nCPU inference models"]
+            subgraph AI["AI / ML  (CPU — scale-from-zero)"]
+                KUBEAI["KubeAI Operator"]
+                MODELS["• deepseek-r1-1.5b\n• qwen2.5-coder-1.5b\n• nomic-embed-text\n• deepseek-r1-8b  ⟵ GPU standby\n• llama-3.1-8b-fp8  ⟵ GPU standby"]
                 OLLAMA["Ollama Operator"]
                 LLAMA["LlamaStack Operator"]
-                MODELS["Models (scale-from-zero)\n• deepseek-r1-1.5b (CPU)\n• qwen2.5-coder-1.5b (CPU)\n• nomic-embed-text (CPU)\n• deepseek-r1-8b (L4 GPU, standby)\n• llama-3.1-8b-fp8 (L4 GPU, standby)"]
             end
 
-            subgraph BLOCKCHAIN["Blockchain Operators"]
-                KOTAL["Kotal Operator\n(5dlabs/kotal fork)\nNEAR + BASE CRDs"]
-                NEAR_NODE["NEAR Mainnet Node\n⚠️ pending NVMe VM"]
-                BASE_NODE["BASE Mainnet Node (Reth)\n⚠️ pending NVMe VM"]
+            subgraph BLOCKCHAIN["Blockchain (Kotal Operator)"]
+                KOTAL["kotal-operator\nghcr.io/5dlabs/kotal:latest\nnearcore 2.10.6 + reth"]
+                NEAR_NODE["NEAR Mainnet Node\nⓘ pending NVMe VM"]
+                BASE_NODE["BASE Mainnet Node (Reth)\nⓘ pending NVMe VM"]
+                KOTAL --> NEAR_NODE
+                KOTAL --> BASE_NODE
             end
 
-            subgraph RUNNERS["CI/CD"]
-                ARC["GitHub ARC Runners\n(self-hosted)"]
+            subgraph INFRA["Infrastructure"]
+                ARC["ARC Runners\n(GitHub Actions)"]
+                LP["local-path provisioner\n200 GB SSD / node"]
+                NVIDIA["Nvidia GPU Operator\n+ NFD (standby)"]
             end
+        end
 
-            subgraph STORAGE["Storage"]
-                LP["local-path provisioner\n(StorageClass: mayastor→local-path)\n200 GB SSD per node"]
-            end
+        subgraph NVME["NVMe VMs — Planned  (requires quota increase: 32/34 cores used)"]
+            T1_NEAR["t1-90\n16 vCPU · 90 GB · 800 GB NVMe\nNEAR Mainnet"]
+            T1_BASE["t1-90 or t2-90\n16–30 vCPU · 90 GB · 800 GB NVMe\nBASE Mainnet (Reth)"]
         end
     end
 
-    %% ── GPU Compute (OVH GRA, France) ──────────────────────────
-    subgraph GRA["🇫🇷  OVH GRA — GPU Compute (France)  [PLANNED]"]
-        direction TB
-        subgraph GPUCLUSTER["GPU Worker Nodes (join BHS5 cluster or standalone)"]
-            H100["h100-760 (recommended)\n8× NVIDIA H100 80 GB\n640 GB VRAM total\n60 vCPU · 760 GB RAM\nMiniMax-Text-01 @ FP8 ✅"]
-            H100MIN["h100-380 (minimum)\n4× NVIDIA H100 80 GB\n320 GB VRAM total\n30 vCPU · 380 GB RAM\nMiniMax-Text-01 @ INT4 ✅"]
-            L40S["l40s-360 (mid-tier)\n4× NVIDIA L40S 48 GB\n192 GB VRAM total\n60 vCPU · 360 GB RAM\nModels up to 70B @ FP8"]
-        end
-        MINIMAX["MiniMax-Text-01\n456B total params\n45.9B active/token (MoE)\n1M token context window\nKubeAI inference endpoint"]
-    end
-
-    %% ── Solana RPC (PhoenixNAP, Singapore) ──────────────────────
-    subgraph SGP["🇸🇬  PhoenixNAP Singapore — Solana RPC"]
-        SOL["Jito v3.1.8-jito (client:Bam)\nyellowstone-grpc v12 (gRPC :10000)\nRPC :8899\nnvme0n1: OS + ledger (637 GB)\nnvme1n1: accounts (513 GB) + snapshots (484 GB)\n500 GB RAM · vm.swappiness=1"]
+    %% ── GPU Region (cross-DC) ────────────────────────────────────
+    subgraph GRA["🇫🇷  OVH GRA — Gravelines, France  (GPU only)"]
+        GPU["GPU Instances\n(see GPU Capacity doc)\nAll OVH GPU compute\nlives here — not in BHS5"]
     end
 
     %% ── Connections ─────────────────────────────────────────────
-    CF -->|"HTTPS → NodePort 30444"| WORKERS
-    CF -->|"tunnel"| CFTUN
+    CF -->|"HTTPS → :30444"| CFTUN
     GH -->|"GitOps sync"| ARGO
-    ARGO -->|"manages"| AI
-    ARGO -->|"manages"| PLATFORM
-    ARGO -->|"manages"| BLOCKCHAIN
-    BAO -->|"ExternalSecrets"| WORKERS
-    KUBEAI -->|"GPU inference\n(when GPU nodes added)"| GPUCLUSTER
-    KOTAL -->|"manages"| NEAR_NODE
-    KOTAL -->|"manages"| BASE_NODE
-    H100 --> MINIMAX
+    ARGO -->|"manages all apps"| WORKERS
+    BAO -->|"secrets"| ESO
+    KUBEAI -.->|"GPU inference\n(cross-region, planned)"| GPU
+
+    style GRA fill:#fff3e0,stroke:#f57c00
+    style NVME fill:#e8f5e9,stroke:#388e3c
 ```
 
 ---
 
-## Network Topology
+## Cluster Node Inventory
 
 ```mermaid
 flowchart LR
-    USER["End User\nbrowser / API client"]
-    CF["Cloudflare\n*.5dlabs.ai"]
-    TUN["cloudflared\n(in-cluster)"]
-    ING["ingress-nginx\n:30444"]
-    SVCS["Platform Services\nArgoCD / Grafana / app.5dlabs.ai"]
+    subgraph CLUSTER["RKE2 Cluster — OVH BHS5"]
+        direction TB
+        N1["cto-node-1\n51.79.26.198\nb2-30 · control-plane\n8 vCPU · 30 GB · 200 GB SSD"]
+        N2["cto-node-2\n51.79.29.63\nb2-30 · worker\n8 vCPU · 30 GB · 200 GB SSD"]
+        N3["cto-node-3\n148.113.141.154\nb2-30 · worker\n8 vCPU · 30 GB · 200 GB SSD"]
+        N4["cto-node-4\n15.235.46.13\nb2-30 · worker\n8 vCPU · 30 GB · 200 GB SSD"]
+    end
 
-    USER -->|"HTTPS"| CF
-    CF -->|"Cloudflare Tunnel\n87889b67..."| TUN
-    TUN -->|"in-cluster routing"| ING
-    ING -->|"Kubernetes Services"| SVCS
-
-    style CF fill:#F6821F,color:#fff
+    subgraph QUOTA["BHS5 vCPU Quota"]
+        Q["32 / 34 cores used\n⚠️ 2 cores headroom\nRequest increase before\nadding blockchain VMs"]
+    end
 ```
 
 ---
 
-## Disk & Storage Layout
+## Network / Ingress
 
 ```mermaid
-flowchart TB
-    subgraph SOL_NODE["Solana Node (PhoenixNAP 125.253.92.141)"]
-        direction LR
-        subgraph nvme0["nvme0n1 — Root Disk (3.5 TB)"]
-            OS["OS / system\n~100 GB"]
-            SWAP3["swapfile3\n200 GB (prio 5)"]
-            LEDGER["/ledger\nRocksDB blockstore\n~637 GB ← migrated Feb-24"]
-        end
-        subgraph nvme1["/solana — Data Disk (3.5 TB)"]
-            ACCT["/solana/accounts\n~513 GB\naccounts index"]
-            SNAPS["/solana/snapshots\n~484 GB"]
-            SWAP1["/swap.img 8 GB\n/swapfile2 64 GB"]
-        end
+flowchart LR
+    USER["User / API Client"]
+    CF["Cloudflare\n*.5dlabs.ai"]
+    TUN["cloudflared\n(in-cluster pod)"]
+    ING["ingress-nginx\nNodePort :30444"]
+
+    subgraph ROUTES["Active DNS Routes"]
+        R1["app.5dlabs.ai"]
+        R2["argocd.5dlabs.ai"]
+        R3["grafana.5dlabs.ai"]
+        R4["headscale.5dlabs.ai"]
+        R5["pm.5dlabs.ai"]
     end
 
-    subgraph CTO_NODES["CTO Workers (OVH BHS5)"]
-        direction LR
-        subgraph NODE2["cto-node-2 (b2-30)"]
-            SSD2["200 GB SSD\nlocal-path PVCs"]
-        end
-        subgraph NODE3["cto-node-3 (b2-30)"]
-            SSD3["200 GB SSD\nlocal-path PVCs"]
-        end
-        subgraph NODE4["cto-node-4 (b2-30)"]
-            SSD4["200 GB SSD\nlocal-path PVCs"]
-        end
-    end
+    USER -->|HTTPS| CF
+    CF -->|"Tunnel 87889b67"| TUN
+    TUN --> ING
+    ING --> ROUTES
 
-    subgraph PLANNED_NVME["Planned: NVMe VMs (OVH BHS5)\n⚠️ Requires quota increase (32/34 cores used)"]
-        direction LR
-        subgraph T1_90_NEAR["t1-90 — NEAR Mainnet"]
-            NEAR_DISK["800 GB NVMe\nNEAR nearcore 2.10.6\nvia Kotal CRD"]
-        end
-        subgraph T1_90_BASE["t1-90 or t2-90 — BASE Mainnet"]
-            BASE_DISK["800 GB NVMe\n+ 1 TB block volume\nReth client\nvia Kotal CRD"]
-        end
-    end
+    style CF fill:#F6821F,color:#fff
 ```
 
 ---
@@ -158,17 +132,38 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    DEV["Developer / Metal agent\n(push to main)"]
-    REPO["github.com/5dlabs/cto\nbranch: main"]
-    ARGO["ArgoCD\nargocd.5dlabs.ai"]
-    APPS["App-of-Apps\nplatform / operators / gitops"]
-    CLUSTER["RKE2 Cluster\nOVH BHS5"]
+    DEV["Commit to\n5dlabs/cto main"]
+    ARGO["ArgoCD\n(app-of-apps)"]
+    APPS["platform /\noperators /\ngitops apps"]
+    CLUSTER["BHS5 Cluster"]
 
-    DEV -->|"git push"| REPO
-    REPO -->|"webhook / poll\n~3 min"| ARGO
-    ARGO -->|"sync Helm/kustomize"| APPS
-    APPS -->|"deploy to"| CLUSTER
+    DEV -->|"webhook / poll"| ARGO
+    ARGO -->|"Helm + kustomize\nsync"| APPS
+    APPS -->|"deployed to"| CLUSTER
 
     style ARGO fill:#EF7B4D,color:#fff
-    style REPO fill:#24292e,color:#fff
+    style DEV fill:#24292e,color:#fff
+```
+
+---
+
+## Storage Layout
+
+```mermaid
+flowchart TB
+    subgraph CTO_WORKERS["CTO Worker Nodes (b2-30 · 200 GB SSD each)"]
+        direction LR
+        W2["cto-node-2\n200 GB SSD\nlocal-path PVCs"]
+        W3["cto-node-3\n200 GB SSD\nlocal-path PVCs"]
+        W4["cto-node-4\n200 GB SSD\nlocal-path PVCs"]
+    end
+
+    subgraph PLANNED["Planned NVMe VMs (OVH BHS5)"]
+        direction LR
+        NEAR_VM["t1-90 → NEAR Mainnet\n800 GB NVMe local disk\n+ optional block volume"]
+        BASE_VM["t1-90 / t2-90 → BASE Mainnet\n800 GB NVMe\n+ 1 TB OVH block volume\n(~1.8 TB total)"]
+    end
+
+    NOTE["StorageClass 'mayastor'\nmapped → rancher.io/local-path\nWaitForFirstConsumer"]
+    CTO_WORKERS --- NOTE
 ```
